@@ -110,31 +110,27 @@ PORT.A provides I2C (G13 SCL / G15 SDA) on a separate bus from the internal peri
 
 ## Display
 
-Two concentric gradient arcs on a dark theme:
+Two concentric gradient arcs on a dark theme, spanning from 7 o'clock (0%) to 5 o'clock (100%):
 
-- **Outer ring** — outside fan speed
-- **Inner ring** — inside fan speed
-- Gradient sweeps from blue (0%) through cyan, green, yellow to red (100%)
-- Selected ring(s) have a bright outline and indicator dot
-- Centre shows the selected group name, percentage, and both fan values
+- **Outer ring** — outside fan speed (orange/amber gradient)
+- **Inner ring** — inside fan speed (cyan/teal gradient)
+- Active ring(s) have a bright colour-matched outline
+- Centre shows the current mode, percentage, and both fan values
 
 ## Controls
 
 | Input | Action |
 |-------|--------|
-| Turn dial | Adjust speed of selected fan group |
-| Touch outer ring | Select outside fans |
-| Touch inner ring | Select inside fans |
-| Touch centre | Select all fans (linked) |
-| Press dial (short) | Toggle fans on/off |
-| Press dial (long) | Enter brightness mode |
+| Press dial | Cycle mode: OFF → INSIDE → OUTSIDE → ALL → OFF |
+| Turn dial | Adjust fan speed of selected group |
+| Tap screen | Enter brightness mode |
 
 ### Brightness mode
 
 | Input | Action |
 |-------|--------|
 | Turn dial | Adjust screen brightness |
-| Press dial / touch | Exit to main screen |
+| Tap screen / press dial | Exit to main screen |
 | 5-second timeout | Screen off (any input wakes) |
 
 ## Building
@@ -151,4 +147,4 @@ arduino-cli upload  --fqbn esp32:esp32:m5stack_dial --port /dev/cu.usbmodem* M5D
 
 ## Persistence
 
-Fan on/off state, inside/outside speeds, selected group, and brightness are saved to NVS flash on change (debounced 1s) and restored at boot.
+Mode, inside/outside speeds, and brightness are saved to NVS flash on change (debounced 1s) and restored at boot.
