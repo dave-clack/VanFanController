@@ -90,7 +90,8 @@ Dual-channel fan speed controller with a round touchscreen UI and rotary encoder
 | Component | Part |
 |-----------|------|
 | MCU + Display | [M5Stack Dial 1.1](https://shop.m5stack.com/products/m5stack-dial-v1-1) (ESP32-S3, 1.28" 240×240 round touch, rotary encoder) |
-| Fan Hubs | Noctua NV-FH2 × 2 (one per fan group) |
+| Temp/Humidity Sensor | [Adafruit SHT41 (#5776)](https://www.adafruit.com/product/5776) via Grove-to-STEMMA-QT cable on PORT.A |
+| Fan Hubs | Noctua NV-FH2 (or any PWM fan hub / direct PWM wiring) |
 | Power | 12V leisure battery → 12V-to-5V buck converter → M5Dial USB or DC input (6–36V) |
 
 ## Wiring
@@ -102,11 +103,18 @@ Dual-channel fan speed controller with a round touchscreen UI and rotary encoder
 | G1         | PWM    | Inside fan hub input (pin 4, blue wire) |
 | G2         | PWM    | Outside fan hub input (pin 4, blue wire) |
 | GND        | GND    | Fan hub GND (pin 1, black wire) |
-| 5V         | —      | Not connected (hubs powered via SATA) |
+| 5V         | —      | Not connected (hubs powered via SATA or direct 12V) |
 
-### Temperature sensor (future)
+### PORT.A (Grove I2C) to SHT41 temperature sensor
 
-PORT.A provides I2C (G13 SCL / G15 SDA) on a separate bus from the internal peripherals. Connect an SHT41 sensor using a Grove-to-STEMMA-QT adapter cable.
+Connect via a Grove-to-STEMMA-QT adapter cable (splice: black→black, red→red, white→blue, yellow→yellow).
+
+| PORT.A Pin | Signal |
+|------------|--------|
+| G13        | SDA    |
+| G15        | SCL    |
+| 3.3V       | Power  |
+| GND        | GND    |
 
 ## Display
 
@@ -116,15 +124,19 @@ Two concentric gradient arcs on a dark theme, spanning from 7 o'clock (0%) to 5 
 - **Inner ring** — inside fan speed
 - Active ring(s) have a bright colour-matched outline
 - Centre shows the current mode, percentage, and both fan values
-- 10 selectable colour palettes (e.g. Blue→Cyan / Green→Yellow, Pink→Purple / Orange→Red)
+- Temperature reading at 6 o'clock (from SHT41 sensor, palette-complementary colour)
+- 18 selectable colour palettes (9 gradient + 9 solid variants)
+- Auto-dim to 2% brightness after 30 seconds idle
 
 ## Controls
 
 | Input | Action |
 |-------|--------|
-| Press dial | Cycle mode: OFF → INSIDE → OUTSIDE → ALL → OFF |
+| Short press dial | Cycle mode: INSIDE → OUTSIDE → ALL → INSIDE |
+| Long press dial | Turn off |
 | Turn dial | Adjust fan speed of selected group |
 | Tap screen | Cycle: main → brightness → palette → main |
+| Any input when off | Turn on |
 
 ### Brightness mode
 
@@ -139,14 +151,14 @@ Two concentric gradient arcs on a dark theme, spanning from 7 o'clock (0%) to 5 
 
 | Input | Action |
 |-------|--------|
-| Turn dial | Cycle through 10 colour palettes (preview at 100%) |
+| Turn dial | Cycle through 18 colour palettes (preview at 100%) |
 | Tap screen | Return to main screen |
 | Press dial | Return to main screen |
 | 5-second timeout | Return to main screen |
 
 ### OFF mode
 
-When the device is off, the screen goes dark to save power. Any input (touch, encoder, button) wakes the screen to show the OFF display. From there, tapping the screen or pressing the button turns the device on (INSIDE mode). Brightness is set to at least 25% on turn-on.
+Long-press the dial button to turn off. Any input (touch, encoder, button) turns the device back on in INSIDE mode. Brightness is set to at least 25% on turn-on.
 
 ## Building
 

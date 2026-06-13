@@ -622,40 +622,27 @@ static void drawMainScreen() {
   canvas.setTextDatum(middle_center);
 
   if (sensorOk) {
-    const Palette& tp = PALETTES[palIdx];
-    float avgH = (tp.inH0 + tp.inH1 + tp.outH0 + tp.outH1) * 0.25f;
+    float avgH = (pal.inH0 + pal.inH1 + pal.outH0 + pal.outH1) * 0.25f;
     float compH = fmodf(avgH + 180.0f, 360.0f);
     uint16_t tempCol = hsvTo565(compH, 0.5f, 0.8f);
-
     char tbuf[10];
-    snprintf(tbuf, sizeof(tbuf), "%.1f", tempC);
-    canvas.setFont(&fonts::FreeSansBold9pt7b);
-    canvas.setTextSize(1.8f);
+    snprintf(tbuf, sizeof(tbuf), "%.1f\xC2\xB0""C", tempC);
+    canvas.setFont(&fonts::lv_font_montserrat_24);
     canvas.setTextColor(tempCol);
-    canvas.setTextDatum(middle_right);
-    int tx = CX + 5;
-    canvas.drawString(tbuf, tx, CY + 108);
-    canvas.drawCircle(tx + 3, CY + 108 - 10, 3, tempCol);
-    canvas.setTextDatum(middle_left);
-    canvas.drawString("C", tx + 8, CY + 108);
-    canvas.setTextSize(1.0f);
-    canvas.setTextDatum(middle_center);
+    canvas.drawString(tbuf, CX, CY + 98);
   }
 
   if (mode == MODE_OFF) {
-    canvas.setFont(&fonts::FreeSansBold18pt7b);
+    canvas.setFont(&fonts::lv_font_montserrat_28);
     canvas.setTextColor(COL_OFF);
     canvas.drawString("OFF", CX, CY - 5);
 
-    canvas.setFont(&fonts::FreeSansBold9pt7b);
-    canvas.setTextSize(0.7f);
+    canvas.setFont(&fonts::lv_font_montserrat_12);
     canvas.setTextColor(COL_LABEL);
     canvas.drawString("tap to start", CX, CY + 28);
-    canvas.setTextSize(1.0f);
     return;
   }
 
-  // 50% palette colour for mode label
   float midV = pal.solid ? 1.0f : 0.85f;
   uint16_t accentCol;
   if (mode == MODE_INSIDE)
@@ -665,7 +652,7 @@ static void drawMainScreen() {
   else
     accentCol = 0xFFFF;
 
-  canvas.setFont(&fonts::FreeSansBold9pt7b);
+  canvas.setFont(&fonts::lv_font_montserrat_16);
   canvas.setTextColor(accentCol);
   canvas.drawString(MODE_NAMES[mode], CX, CY - 30);
 
@@ -676,14 +663,12 @@ static void drawMainScreen() {
 
   char buf[8];
   snprintf(buf, sizeof(buf), "%d%%", dispPct);
-  canvas.setFont(&fonts::FreeSansBold24pt7b);
+  canvas.setFont(&fonts::lv_font_montserrat_36);
   canvas.setTextColor(accentCol);
   canvas.drawString(buf, CX, CY + 8);
 
-  // Detail line: per-ring 50% colours
   if (mode == MODE_BOTH || inPct != outPct) {
-    canvas.setFont(&fonts::FreeSansBold9pt7b);
-    canvas.setTextSize(0.65f);
+    canvas.setFont(&fonts::lv_font_montserrat_12);
 
     char inBuf[12], outBuf[12];
     snprintf(inBuf,  sizeof(inBuf),  "IN %d%%",  inPct);
@@ -702,7 +687,6 @@ static void drawMainScreen() {
     canvas.setTextColor(hsvTo565((pal.outH0 + pal.outH1) * 0.5f, 1.0f, midV));
     canvas.drawString(outBuf, startX + inW + gap, CY + 40);
 
-    canvas.setTextSize(1.0f);
     canvas.setTextDatum(middle_center);
   }
 
@@ -734,13 +718,13 @@ static void drawBrightnessScreen() {
 
   canvas.setTextDatum(middle_center);
 
-  canvas.setFont(&fonts::FreeSansBold9pt7b);
+  canvas.setFont(&fonts::lv_font_montserrat_16);
   canvas.setTextColor(COL_TEXT);
   canvas.drawString("BRIGHTNESS", CX, CY - 25);
 
   char buf[8];
   snprintf(buf, sizeof(buf), "%d%%", brightPct);
-  canvas.setFont(&fonts::FreeSansBold24pt7b);
+  canvas.setFont(&fonts::lv_font_montserrat_36);
   canvas.setTextColor(COL_TEXT);
   canvas.drawString(buf, CX, CY + 12);
 }
@@ -758,13 +742,13 @@ static void drawPaletteScreen() {
 
   canvas.setTextDatum(middle_center);
 
-  canvas.setFont(&fonts::FreeSansBold9pt7b);
+  canvas.setFont(&fonts::lv_font_montserrat_16);
   canvas.setTextColor(COL_LABEL);
   canvas.drawString("PALETTE", CX, CY - 25);
 
   char buf[8];
   snprintf(buf, sizeof(buf), "%d/%d", palIdx + 1, PAL_COUNT);
-  canvas.setFont(&fonts::FreeSansBold18pt7b);
+  canvas.setFont(&fonts::lv_font_montserrat_24);
   canvas.setTextColor(COL_TEXT);
   canvas.drawString(buf, CX, CY + 12);
 }
