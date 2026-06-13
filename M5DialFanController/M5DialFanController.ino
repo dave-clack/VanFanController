@@ -193,7 +193,6 @@ static void handleEncoder();
 static void handleTouch();
 static void handleButton();
 static void enterBrightness();
-static void wakeFromOff();
 static void sleepScreen();
 static void turnOn();
 static void markDirty();
@@ -260,6 +259,8 @@ void loop() {
   handleEncoder();
   handleTouch();
 
+  now = millis();
+
   // Read temperature sensor periodically
   if (sensorOk && (now - lastSensorMs) >= SENSOR_INTERVAL) {
     lastSensorMs = now;
@@ -270,7 +271,6 @@ void loop() {
   if ((scr == SCR_BRIGHT || scr == SCR_PALETTE)
       && (now - brightEnterMs) >= BRIGHT_TIMEOUT) {
     scr = SCR_MAIN;
-    if (mode == MODE_OFF) offScreenMs = millis();
     lastActivityMs = now;
     markDirty();
   }
@@ -384,7 +384,7 @@ static void handleEncoder() {
 
   resetActivity();
 
-  if (scr == SCR_OFF) { wakeFromOff(); return; }
+  if (scr == SCR_OFF || mode == MODE_OFF) { turnOn(); return; }
 
   if (scr == SCR_BRIGHT) {
     for (int i = 0; i < abs(detents); i++)
@@ -403,9 +403,6 @@ static void handleEncoder() {
     markPrefsDirty();
     return;
   }
-
-  // SCR_MAIN
-  if (mode == MODE_OFF) { offScreenMs = millis(); return; }
 
   int change = detents * ENCODER_STEP;
   if (mode == MODE_INSIDE || mode == MODE_BOTH)
@@ -427,15 +424,11 @@ static void handleTouch() {
       lastTouchMs = now;
       resetActivity();
 
-      if (scr == SCR_OFF) {
-        wakeFromOff();
+      if (scr == SCR_OFF || mode == MODE_OFF) {
+        turnOn();
       } else if (scr == SCR_MAIN) {
-        if (mode == MODE_OFF) {
-          turnOn();
-        } else {
-          enterBrightness();
-          M5Dial.Speaker.tone(2000, 25);
-        }
+        enterBrightness();
+        M5Dial.Speaker.tone(2000, 25);
       } else if (scr == SCR_BRIGHT) {
         scr = SCR_PALETTE;
         brightEnterMs = millis();
@@ -443,7 +436,6 @@ static void handleTouch() {
         M5Dial.Speaker.tone(2500, 25);
       } else if (scr == SCR_PALETTE) {
         scr = SCR_MAIN;
-        if (mode == MODE_OFF) offScreenMs = millis();
         markDirty();
         M5Dial.Speaker.tone(1000, 25);
       }
@@ -453,37 +445,42 @@ static void handleTouch() {
 }
 
 static void handleButton() {
+  // Long press → turn off
+  if (M5Dial.BtnA.wasHold()) {
+    resetActivity();
+    mode = MODE_OFF;
+    applyFanPWM();
+    offScreenMs = millis();
+    scr = SCR_MAIN;
+    markDirty();
+    markPrefsDirty();
+    M5Dial.Speaker.tone(800, 60);
+    return;
+  }
+
   if (!M5Dial.BtnA.wasReleased()) return;
   resetActivity();
 
-  if (scr == SCR_OFF) { wakeFromOff(); return; }
+  if (scr == SCR_OFF) { turnOn(); return; }
+
+  if (mode == MODE_OFF) { turnOn(); return; }
 
   if (scr == SCR_BRIGHT || scr == SCR_PALETTE) {
     scr = SCR_MAIN;
-    if (mode == MODE_OFF) offScreenMs = millis();
     markDirty();
     M5Dial.Speaker.tone(1000, 25);
     return;
   }
 
-  // SCR_MAIN
-  if (mode == MODE_OFF) {
-    turnOn();
-    return;
-  }
+  // Cycle mode: INSIDE → OUTSIDE → ALL → INSIDE
+  if      (mode == MODE_INSIDE)  mode = MODE_OUTSIDE;
+  else if (mode == MODE_OUTSIDE) mode = MODE_BOTH;
+  else                           mode = MODE_INSIDE;
 
-  // Cycle mode: INSIDE → OUTSIDE → BOTH → OFF
-  mode = (Mode)((mode + 1) % 4);
   applyFanPWM();
   markDirty();
   markPrefsDirty();
-
-  if (mode == MODE_OFF) {
-    M5Dial.Speaker.tone(800, 60);
-    offScreenMs = millis();
-  } else {
-    M5Dial.Speaker.tone(1500, 40);
-  }
+  M5Dial.Speaker.tone(1500, 40);
 }
 
 // =========================== Screen state ==================================
@@ -494,22 +491,16 @@ static void enterBrightness() {
   markDirty();
 }
 
-static void wakeFromOff() {
+static void turnOn() {
+  mode = MODE_INSIDE;
   scr = SCR_MAIN;
-  offScreenMs = millis();
+  brightPct = max(brightPct, WAKE_MIN_BRIGHT);
+  applyFanPWM();
   canvas.fillSprite(COL_BG);
   drawMainScreen();
   canvas.pushSprite(0, 0);
   M5Dial.Display.setBrightness(brightPct * 255 / 100);
   dirty = false;
-}
-
-static void turnOn() {
-  mode = MODE_INSIDE;
-  brightPct = max(brightPct, WAKE_MIN_BRIGHT);
-  M5Dial.Display.setBrightness(brightPct * 255 / 100);
-  applyFanPWM();
-  markDirty();
   markPrefsDirty();
   M5Dial.Speaker.tone(1500, 40);
 }
