@@ -112,10 +112,11 @@ PORT.A provides I2C (G13 SCL / G15 SDA) on a separate bus from the internal peri
 
 Two concentric gradient arcs on a dark theme, spanning from 7 o'clock (0%) to 5 o'clock (100%):
 
-- **Outer ring** — outside fan speed (orange/amber gradient)
-- **Inner ring** — inside fan speed (cyan/teal gradient)
+- **Outer ring** — outside fan speed
+- **Inner ring** — inside fan speed
 - Active ring(s) have a bright colour-matched outline
 - Centre shows the current mode, percentage, and both fan values
+- 10 selectable colour palettes (e.g. Blue→Cyan / Green→Yellow, Pink→Purple / Orange→Red)
 
 ## Controls
 
@@ -123,15 +124,29 @@ Two concentric gradient arcs on a dark theme, spanning from 7 o'clock (0%) to 5 
 |-------|--------|
 | Press dial | Cycle mode: OFF → INSIDE → OUTSIDE → ALL → OFF |
 | Turn dial | Adjust fan speed of selected group |
-| Tap screen | Enter brightness mode |
+| Tap screen | Cycle: main → brightness → palette → main |
 
 ### Brightness mode
 
 | Input | Action |
 |-------|--------|
-| Turn dial | Adjust screen brightness |
-| Tap screen / press dial | Exit to main screen |
-| 5-second timeout | Screen off (any input wakes) |
+| Turn dial | Adjust brightness (step ladder: 100, 90, …, 10, 5, 2, 1) |
+| Tap screen | Switch to palette mode |
+| Press dial | Return to main screen |
+| 5-second timeout | Return to main screen |
+
+### Palette mode
+
+| Input | Action |
+|-------|--------|
+| Turn dial | Cycle through 10 colour palettes (preview at 100%) |
+| Tap screen | Return to main screen |
+| Press dial | Return to main screen |
+| 5-second timeout | Return to main screen |
+
+### OFF mode
+
+When the device is off, the screen goes dark to save power. Any input (touch, encoder, button) wakes the screen to show the OFF display. From there, tapping the screen or pressing the button turns the device on (INSIDE mode). Brightness is set to at least 25% on turn-on.
 
 ## Building
 
@@ -147,4 +162,4 @@ arduino-cli upload  --fqbn esp32:esp32:m5stack_dial --port /dev/cu.usbmodem* M5D
 
 ## Persistence
 
-Mode, inside/outside speeds, and brightness are saved to NVS flash on change (debounced 1s) and restored at boot.
+Mode, inside/outside speeds, brightness, and palette selection are saved to NVS flash on change (debounced 1s) and restored at boot.

@@ -18,16 +18,13 @@
 //
 // Controls:
 //   Button (press dial)  Cycle mode: OFF → INSIDE → OUTSIDE → ALL → OFF
-//   Rotary encoder       Adjust fan speed of selected group (or brightness)
-//   Touch screen         Enter / exit brightness adjustment mode
+//   Rotary encoder       Adjust fan speed, brightness, or palette
+//   Touch screen         Cycle: main → brightness → palette → main
 //
-// Brightness mode (entered by tapping the screen):
-//   Encoder              Adjust brightness
-//   Touch / button       Exit to main
-//   5s timeout           Screen off; any input wakes
+// OFF mode: screen goes dark; any input wakes to show OFF screen;
+//   tap or press from OFF screen turns on (cycles to INSIDE).
 //
-// Display: Two concentric arcs with per-ring colour gradients.
-//          Inside ring = cyan/teal, outside ring = orange/amber.
+// Display: Two concentric gradient arcs with selectable colour palettes.
 //          Arc spans from 7 o'clock (0%) to 5 o'clock (100%).
 //
 // Persistence: State saved to NVS on change (debounced 1s), restored at boot.
@@ -54,22 +51,27 @@ static const uint8_t  FAN_PWM_RES  = 8;      // 8-bit duty (0–255)
 
 static const int FAN_MIN_PCT      = 20;   // minimum running %; 0 = off
 static const int ENCODER_STEP     = 5;    // % change per encoder detent
-static const int BRIGHTNESS_MIN   = 5;    // lowest screen brightness %
-static const int BRIGHTNESS_MAX   = 100;
 static const int DEFAULT_INSIDE   = 30;
 static const int DEFAULT_OUTSIDE  = 30;
 static const int DEFAULT_BRIGHT   = 80;
+static const int WAKE_MIN_BRIGHT  = 25;   // floor when turning on
 
 // M5Dial encoder: 64 pulses / 16 physical detents = 4 counts per click.
 static const int COUNTS_PER_DETENT = 4;
 
+// =========================== Brightness step ladder ========================
+
+static const int BRIGHT_STEPS[] = { 1, 2, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100 };
+static const int BRIGHT_STEP_N  = sizeof(BRIGHT_STEPS) / sizeof(BRIGHT_STEPS[0]);
+
 // =========================== Timing ========================================
 
-static const unsigned long DISPLAY_MS        = 33;    // ~30 fps render cap
-static const unsigned long BRIGHT_TIMEOUT    = 5000;  // brightness mode → off
-static const unsigned long PREFS_DEBOUNCE    = 1000;
-static const unsigned long TOUCH_DEBOUNCE    = 300;
-static const unsigned long ENC_BOUNCE_MS     = 50;    // anti-bounce window
+static const unsigned long DISPLAY_MS         = 33;    // ~30 fps render cap
+static const unsigned long BRIGHT_TIMEOUT     = 5000;  // brightness/palette → main
+static const unsigned long OFF_SCREEN_TIMEOUT = 5000;  // OFF screen → dark
+static const unsigned long PREFS_DEBOUNCE     = 1000;
+static const unsigned long TOUCH_DEBOUNCE     = 300;
+static const unsigned long ENC_BOUNCE_MS      = 50;    // anti-bounce window
 
 // =========================== Display geometry ==============================
 
@@ -78,12 +80,12 @@ static const int16_t CX = 120, CY = 120;          // screen centre
 static const int16_t OUT_R1 = 116, OUT_R2 = 100;  // outer ring radii
 static const int16_t IN_R1  = 94,  IN_R2  = 78;   // inner ring radii
 
-// 300° gauge arc: 7 o'clock (210°) clockwise to 5 o'clock (150°).
-// LovyanGFX angles: 0° = 12 o'clock, positive = clockwise.
-static const float ARC_START = 210.0f;
+// LovyanGFX angles: 0° = 3 o'clock (east), positive = clockwise.
+// 7 o'clock = 120°, sweep 300° clockwise to 5 o'clock (60°).
+static const float ARC_START = 120.0f;
 static const float ARC_SWEEP = 300.0f;
 
-// Ignore edge touches (likely finger brushing encoder ring)
+// Ignore edge touches (finger brushing encoder ring)
 static const float TOUCH_MAX_R = 110.0f;
 
 // =========================== Colours =======================================
@@ -92,33 +94,46 @@ static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
   return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
 }
 
-static const uint16_t COL_BG         = rgb565(6,   6,   16);
-static const uint16_t COL_TRACK      = rgb565(22,  22,  38);
-static const uint16_t COL_TRACK_OFF  = rgb565(12,  12,  22);
-static const uint16_t COL_IN_TRACK   = rgb565(12,  28,  32);  // tinted teal
-static const uint16_t COL_OUT_TRACK  = rgb565(32,  18,  8);   // tinted orange
-static const uint16_t COL_TEXT       = rgb565(230, 230, 240);
-static const uint16_t COL_LABEL      = rgb565(100, 100, 120);
-static const uint16_t COL_OFF        = rgb565(60,  60,  70);
-static const uint16_t COL_IN_SEL     = rgb565(0,   220, 200);  // bright cyan
-static const uint16_t COL_OUT_SEL    = rgb565(255, 180, 40);   // bright amber
-static const uint16_t COL_IN_ACCENT  = rgb565(0,   200, 190);  // centre label
-static const uint16_t COL_OUT_ACCENT = rgb565(255, 160, 30);   // centre label
-static const uint16_t COL_AMBER      = rgb565(255, 193, 7);
-static const uint16_t COL_TICK       = rgb565(50,  50,  65);
+static const uint16_t COL_BG        = rgb565(6,   6,   16);
+static const uint16_t COL_TRACK     = rgb565(22,  22,  38);
+static const uint16_t COL_TRACK_OFF = rgb565(12,  12,  22);
+static const uint16_t COL_TEXT      = rgb565(230, 230, 240);
+static const uint16_t COL_LABEL     = rgb565(100, 100, 120);
+static const uint16_t COL_OFF       = rgb565(60,  60,  70);
+static const uint16_t COL_AMBER     = rgb565(255, 193, 7);
+static const uint16_t COL_TICK      = rgb565(50,  50,  65);
+
+// =========================== Palettes ======================================
+
+struct Palette { float inH0, inH1, outH0, outH1; };
+
+static const int PAL_COUNT = 10;
+static const Palette PALETTES[PAL_COUNT] = {
+  { 230, 185, 120, 60  },  // Blue→Cyan / Green→Yellow
+  { 320, 280,  30,  0  },  // Pink→Purple / Orange→Red
+  { 200, 160,  15, 40  },  // Teal→Mint / Scarlet→Amber
+  { 260, 220,  50, 25  },  // Violet→Blue / Gold→Coral
+  { 170, 130, 340, 310 },  // Cyan→Green / Rose→Magenta
+  { 300, 260,  55, 30  },  // Magenta→Indigo / Yellow→Orange
+  { 210, 250,  45, 60  },  // Blue→Indigo / Amber→Yellow
+  { 150, 100, 330, 295 },  // Teal→Lime / Pink→Violet
+  { 185, 225, 310, 340 },  // Cyan→Blue / Purple→Rose
+  { 240, 175,  10, 50  },  // Indigo→Teal / Red→Gold
+};
 
 // =========================== State =========================================
 
 enum Mode   : uint8_t { MODE_OFF = 0, MODE_INSIDE = 1, MODE_OUTSIDE = 2, MODE_BOTH = 3 };
-enum Screen : uint8_t { SCR_MAIN = 0, SCR_BRIGHT = 1, SCR_OFF = 2 };
+enum Screen : uint8_t { SCR_MAIN = 0, SCR_BRIGHT = 1, SCR_PALETTE = 2, SCR_OFF = 3 };
 
 static const char* MODE_NAMES[] = { "OFF", "INSIDE", "OUTSIDE", "ALL" };
 
 Mode      mode      = MODE_OFF;
 int       inPct     = DEFAULT_INSIDE;
 int       outPct    = DEFAULT_OUTSIDE;
-Screen    scr       = SCR_MAIN;
+Screen    scr       = SCR_OFF;
 int       brightPct = DEFAULT_BRIGHT;
+int       palIdx    = 0;
 
 long          encLast        = 0;
 long          encAccum       = 0;
@@ -129,6 +144,7 @@ bool          prefsDirty     = false;
 unsigned long prefsDirtyMs   = 0;
 unsigned long lastDrawMs     = 0;
 unsigned long brightEnterMs  = 0;
+unsigned long offScreenMs    = 0;
 unsigned long lastTouchMs    = 0;
 bool          wasTouching    = false;
 
@@ -138,27 +154,27 @@ Preferences prefs;
 // =========================== Forward declarations ==========================
 
 static uint16_t hsvTo565(float h, float s, float v);
-static uint16_t insideColor(float t);
-static uint16_t outsideColor(float t);
-typedef uint16_t (*ColorFn)(float);
 static void drawGradientArc(int16_t r1, int16_t r2, int pct,
-                            bool selected, bool active,
-                            ColorFn colorFn, uint16_t selColor, uint16_t trackSel);
+                            bool selected, bool active, float h0, float h1);
 static void drawTick(float angleDeg, int16_t rIn, int16_t rOut, uint16_t col);
 static void drawMainScreen();
 static void drawBrightnessScreen();
+static void drawPaletteScreen();
 static int  clampFan(int pct);
 static void applyFanPWM();
 static void handleEncoder();
 static void handleTouch();
 static void handleButton();
 static void enterBrightness();
-static void wakeScreen();
+static void wakeFromOff();
 static void sleepScreen();
+static void turnOn();
 static void markDirty();
 static void markPrefsDirty();
 static void loadPrefs();
 static void savePrefs();
+static int  nextBrightStep(int cur);
+static int  prevBrightStep(int cur);
 
 // =========================== Setup =========================================
 
@@ -178,10 +194,18 @@ void setup() {
   ledcAttach(PWM_OUTSIDE_PIN, FAN_PWM_FREQ, FAN_PWM_RES);
 
   loadPrefs();
-  M5Dial.Display.setBrightness(brightPct * 255 / 100);
+
+  if (mode == MODE_OFF) {
+    scr = SCR_OFF;
+    M5Dial.Display.setBrightness(0);
+  } else {
+    scr = SCR_MAIN;
+    brightPct = max(brightPct, WAKE_MIN_BRIGHT);
+    M5Dial.Display.setBrightness(brightPct * 255 / 100);
+  }
+
   encLast = M5Dial.Encoder.read();
   applyFanPWM();
-
   Serial.println("M5Dial Fan Controller ready");
 }
 
@@ -195,21 +219,36 @@ void loop() {
   handleEncoder();
   handleTouch();
 
-  if (scr == SCR_BRIGHT && (now - brightEnterMs) >= BRIGHT_TIMEOUT) {
+  // Brightness / palette timeout → return to main
+  if ((scr == SCR_BRIGHT || scr == SCR_PALETTE)
+      && (now - brightEnterMs) >= BRIGHT_TIMEOUT) {
+    scr = SCR_MAIN;
+    if (mode == MODE_OFF) offScreenMs = millis();
+    markDirty();
+  }
+
+  // OFF-mode idle → darken screen
+  if (scr == SCR_MAIN && mode == MODE_OFF
+      && (now - offScreenMs) >= OFF_SCREEN_TIMEOUT) {
     sleepScreen();
   }
 
+  // Flush prefs after debounce
   if (prefsDirty && (now - prefsDirtyMs) >= PREFS_DEBOUNCE) {
     savePrefs();
     prefsDirty = false;
   }
 
+  // Render
   if (scr != SCR_OFF && dirty && (now - lastDrawMs) >= DISPLAY_MS) {
     lastDrawMs = now;
     dirty = false;
     canvas.fillSprite(COL_BG);
-    if (scr == SCR_BRIGHT) drawBrightnessScreen();
-    else                    drawMainScreen();
+    switch (scr) {
+      case SCR_BRIGHT:  drawBrightnessScreen(); break;
+      case SCR_PALETTE: drawPaletteScreen();    break;
+      default:          drawMainScreen();       break;
+    }
     canvas.pushSprite(0, 0);
   }
 }
@@ -225,18 +264,32 @@ static int clampFan(int pct) {
 
 static void applyFanPWM() {
   uint32_t inD = 0, outD = 0;
-  if (mode != MODE_OFF) {
-    inD  = map(clampFan(inPct),  0, 100, 0, 255);
+  if (mode == MODE_INSIDE || mode == MODE_BOTH)
+    inD = map(clampFan(inPct), 0, 100, 0, 255);
+  if (mode == MODE_OUTSIDE || mode == MODE_BOTH)
     outD = map(clampFan(outPct), 0, 100, 0, 255);
-  }
   ledcWrite(PWM_INSIDE_PIN,  inD);
   ledcWrite(PWM_OUTSIDE_PIN, outD);
 }
 
-// =========================== Input handlers ================================
+// =========================== Input helpers =================================
 
 static void markDirty()      { dirty = true; }
 static void markPrefsDirty() { prefsDirty = true; prefsDirtyMs = millis(); }
+
+static int nextBrightStep(int cur) {
+  for (int i = 0; i < BRIGHT_STEP_N; i++)
+    if (BRIGHT_STEPS[i] > cur) return BRIGHT_STEPS[i];
+  return BRIGHT_STEPS[BRIGHT_STEP_N - 1];
+}
+
+static int prevBrightStep(int cur) {
+  for (int i = BRIGHT_STEP_N - 1; i >= 0; i--)
+    if (BRIGHT_STEPS[i] < cur) return BRIGHT_STEPS[i];
+  return BRIGHT_STEPS[0];
+}
+
+// =========================== Input handlers ================================
 
 static void handleEncoder() {
   long pos = M5Dial.Encoder.read();
@@ -253,16 +306,15 @@ static void handleEncoder() {
   // Anti-bounce: suppress rapid direction reversals
   unsigned long now = millis();
   int dir = (detents > 0) ? 1 : -1;
-  if (dir != lastEncDir && (now - lastEncEventMs) < ENC_BOUNCE_MS) {
-    return;
-  }
+  if (dir != lastEncDir && (now - lastEncEventMs) < ENC_BOUNCE_MS) return;
   lastEncDir = dir;
   lastEncEventMs = now;
 
-  if (scr == SCR_OFF) { wakeScreen(); return; }
+  if (scr == SCR_OFF) { wakeFromOff(); return; }
 
   if (scr == SCR_BRIGHT) {
-    brightPct = constrain(brightPct + detents * 5, BRIGHTNESS_MIN, BRIGHTNESS_MAX);
+    for (int i = 0; i < abs(detents); i++)
+      brightPct = (detents > 0) ? nextBrightStep(brightPct) : prevBrightStep(brightPct);
     M5Dial.Display.setBrightness(brightPct * 255 / 100);
     brightEnterMs = millis();
     markDirty();
@@ -270,7 +322,16 @@ static void handleEncoder() {
     return;
   }
 
-  if (mode == MODE_OFF) return;
+  if (scr == SCR_PALETTE) {
+    palIdx = ((palIdx + detents) % PAL_COUNT + PAL_COUNT) % PAL_COUNT;
+    brightEnterMs = millis();
+    markDirty();
+    markPrefsDirty();
+    return;
+  }
+
+  // SCR_MAIN
+  if (mode == MODE_OFF) { offScreenMs = millis(); return; }
 
   int change = detents * ENCODER_STEP;
   if (mode == MODE_INSIDE || mode == MODE_BOTH)
@@ -301,13 +362,23 @@ static void handleTouch() {
       }
 
       if (scr == SCR_OFF) {
-        wakeScreen();
+        wakeFromOff();
+      } else if (scr == SCR_MAIN) {
+        if (mode == MODE_OFF) {
+          turnOn();
+        } else {
+          enterBrightness();
+          M5Dial.Speaker.tone(2000, 25);
+        }
       } else if (scr == SCR_BRIGHT) {
+        scr = SCR_PALETTE;
+        brightEnterMs = millis();
+        markDirty();
+        M5Dial.Speaker.tone(2500, 25);
+      } else if (scr == SCR_PALETTE) {
         scr = SCR_MAIN;
         markDirty();
-      } else {
-        enterBrightness();
-        M5Dial.Speaker.tone(1200, 30);
+        M5Dial.Speaker.tone(1000, 25);
       }
     }
   }
@@ -315,23 +386,34 @@ static void handleTouch() {
 }
 
 static void handleButton() {
-  if (M5Dial.BtnA.wasReleased()) {
-    if (scr == SCR_OFF) {
-      wakeScreen();
-      return;
-    }
-    if (scr == SCR_BRIGHT) {
-      scr = SCR_MAIN;
-      markDirty();
-      return;
-    }
+  if (!M5Dial.BtnA.wasReleased()) return;
 
-    // Cycle mode: OFF → INSIDE → OUTSIDE → BOTH → OFF
-    mode = (Mode)((mode + 1) % 4);
-    applyFanPWM();
+  if (scr == SCR_OFF) { wakeFromOff(); return; }
+
+  if (scr == SCR_BRIGHT || scr == SCR_PALETTE) {
+    scr = SCR_MAIN;
     markDirty();
-    markPrefsDirty();
-    M5Dial.Speaker.tone(mode == MODE_OFF ? 800 : 1500, 40);
+    M5Dial.Speaker.tone(1000, 25);
+    return;
+  }
+
+  // SCR_MAIN
+  if (mode == MODE_OFF) {
+    turnOn();
+    return;
+  }
+
+  // Cycle mode: INSIDE → OUTSIDE → BOTH → OFF
+  mode = (Mode)((mode + 1) % 4);
+  applyFanPWM();
+  markDirty();
+  markPrefsDirty();
+
+  if (mode == MODE_OFF) {
+    M5Dial.Speaker.tone(800, 60);
+    sleepScreen();
+  } else {
+    M5Dial.Speaker.tone(1500, 40);
   }
 }
 
@@ -343,10 +425,21 @@ static void enterBrightness() {
   markDirty();
 }
 
-static void wakeScreen() {
+static void wakeFromOff() {
   scr = SCR_MAIN;
   M5Dial.Display.setBrightness(brightPct * 255 / 100);
+  offScreenMs = millis();
   markDirty();
+}
+
+static void turnOn() {
+  mode = MODE_INSIDE;
+  brightPct = max(brightPct, WAKE_MIN_BRIGHT);
+  M5Dial.Display.setBrightness(brightPct * 255 / 100);
+  applyFanPWM();
+  markDirty();
+  markPrefsDirty();
+  M5Dial.Speaker.tone(1500, 40);
 }
 
 static void sleepScreen() {
@@ -358,12 +451,11 @@ static void sleepScreen() {
 
 static void loadPrefs() {
   prefs.begin("dialfan", true);
-  int m     = prefs.getInt("mode",   MODE_OFF);
-  mode      = (Mode)constrain(m, 0, 3);
+  mode      = (Mode)constrain(prefs.getInt("mode",   MODE_OFF), 0, 3);
   inPct     = constrain(prefs.getInt("inPct",  DEFAULT_INSIDE),  0, 100);
   outPct    = constrain(prefs.getInt("outPct", DEFAULT_OUTSIDE), 0, 100);
-  brightPct = constrain(prefs.getInt("bright", DEFAULT_BRIGHT),
-                         BRIGHTNESS_MIN, BRIGHTNESS_MAX);
+  brightPct = constrain(prefs.getInt("bright", DEFAULT_BRIGHT),  1, 100);
+  palIdx    = constrain(prefs.getInt("palette", 0), 0, PAL_COUNT - 1);
   prefs.end();
 }
 
@@ -373,12 +465,15 @@ static void savePrefs() {
   prefs.putInt("inPct",   inPct);
   prefs.putInt("outPct",  outPct);
   prefs.putInt("bright",  brightPct);
+  prefs.putInt("palette", palIdx);
   prefs.end();
 }
 
 // =========================== Colour helpers ================================
 
 static uint16_t hsvTo565(float h, float s, float v) {
+  while (h < 0)    h += 360;
+  while (h >= 360) h -= 360;
   float c = v * s;
   float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
   float m = v - c;
@@ -394,36 +489,27 @@ static uint16_t hsvTo565(float h, float s, float v) {
                 (uint8_t)((b + m) * 255));
 }
 
-// Inside ring: dark cyan-blue → bright teal-green
-static uint16_t insideColor(float t) {
-  t = constrain(t, 0.0f, 1.0f);
-  float hue = 200.0f - 40.0f * t;   // 200° → 160°
-  return hsvTo565(hue, 1.0f, 0.65f + 0.35f * t);
-}
-
-// Outside ring: dark red-orange → bright amber
-static uint16_t outsideColor(float t) {
-  t = constrain(t, 0.0f, 1.0f);
-  float hue = 10.0f + 30.0f * t;    // 10° → 40°
-  return hsvTo565(hue, 1.0f, 0.65f + 0.35f * t);
-}
-
 // =========================== Drawing helpers ===============================
 
+// Tick marks use the same coordinate system as fillArc:
+// 0° = 3 o'clock (east), clockwise positive.
 static void drawTick(float angleDeg, int16_t rIn, int16_t rOut, uint16_t col) {
   float rad = angleDeg * PI / 180.0f;
-  float s = sinf(rad), c = cosf(rad);
-  canvas.drawLine(CX + (int)(rIn  * s), CY - (int)(rIn  * c),
-                  CX + (int)(rOut * s), CY - (int)(rOut * c), col);
+  float cs = cosf(rad), sn = sinf(rad);
+  canvas.drawLine(CX + (int)(rIn  * cs), CY + (int)(rIn  * sn),
+                  CX + (int)(rOut * cs), CY + (int)(rOut * sn), col);
 }
 
 static void drawGradientArc(int16_t r1, int16_t r2, int pct,
                             bool selected, bool active,
-                            ColorFn colorFn, uint16_t selColor,
-                            uint16_t trackSel) {
-  uint16_t trackCol = !active   ? COL_TRACK_OFF
-                    : selected  ? trackSel
-                                : COL_TRACK;
+                            float h0, float h1) {
+  float midH = h0 + (h1 - h0) * 0.5f;
+
+  uint16_t trackCol;
+  if      (!active)  trackCol = COL_TRACK_OFF;
+  else if (selected) trackCol = hsvTo565(midH, 0.4f, 0.12f);
+  else               trackCol = COL_TRACK;
+
   canvas.fillArc(CX, CY, r1, r2, ARC_START, ARC_START + ARC_SWEEP, trackCol);
 
   if (active && pct > 0) {
@@ -434,27 +520,29 @@ static void drawGradientArc(int16_t r1, int16_t r2, int pct,
       float a0 = ARC_START + i * seg;
       float a1 = ARC_START + fminf((i + 1) * seg, sweep);
       float t = (a0 - ARC_START) / ARC_SWEEP;
-      canvas.fillArc(CX, CY, r1, r2, a0, a1, colorFn(t));
+      canvas.fillArc(CX, CY, r1, r2, a0, a1,
+                     hsvTo565(h0 + (h1 - h0) * t, 1.0f, 0.7f + 0.3f * t));
     }
   }
 
   if (selected && active) {
     canvas.drawArc(CX, CY, r1 + 1, r1, ARC_START,
-                   ARC_START + ARC_SWEEP, selColor);
+                   ARC_START + ARC_SWEEP, hsvTo565(midH, 0.6f, 1.0f));
   }
 }
 
 // =========================== Screen drawing ================================
 
 static void drawMainScreen() {
+  const Palette& pal = PALETTES[palIdx];
   bool active = (mode != MODE_OFF);
   bool inSel  = (mode == MODE_INSIDE || mode == MODE_BOTH);
   bool outSel = (mode == MODE_OUTSIDE || mode == MODE_BOTH);
 
   drawGradientArc(OUT_R1, OUT_R2, active ? outPct : 0, outSel, active,
-                  outsideColor, COL_OUT_SEL, COL_OUT_TRACK);
+                  pal.outH0, pal.outH1);
   drawGradientArc(IN_R1,  IN_R2,  active ? inPct  : 0, inSel,  active,
-                  insideColor,  COL_IN_SEL,  COL_IN_TRACK);
+                  pal.inH0, pal.inH1);
 
   for (int i = 0; i <= 4; i++) {
     float angle = ARC_START + ARC_SWEEP * i / 4.0f;
@@ -471,16 +559,19 @@ static void drawMainScreen() {
     canvas.setFont(&fonts::FreeSansBold9pt7b);
     canvas.setTextSize(0.7f);
     canvas.setTextColor(COL_LABEL);
-    canvas.drawString("press to start", CX, CY + 28);
+    canvas.drawString("tap to start", CX, CY + 28);
     canvas.setTextSize(1.0f);
     return;
   }
 
-  // Mode label with ring-matched colour
+  // Mode label with palette-derived accent colour
   uint16_t accentCol;
-  if      (mode == MODE_INSIDE)  accentCol = COL_IN_ACCENT;
-  else if (mode == MODE_OUTSIDE) accentCol = COL_OUT_ACCENT;
-  else                            accentCol = COL_TEXT;
+  if (mode == MODE_INSIDE)
+    accentCol = hsvTo565((pal.inH0 + pal.inH1) * 0.5f, 0.7f, 1.0f);
+  else if (mode == MODE_OUTSIDE)
+    accentCol = hsvTo565((pal.outH0 + pal.outH1) * 0.5f, 0.7f, 1.0f);
+  else
+    accentCol = COL_TEXT;
 
   canvas.setFont(&fonts::FreeSansBold9pt7b);
   canvas.setTextColor(accentCol);
@@ -490,7 +581,7 @@ static void drawMainScreen() {
   int dispPct;
   if      (mode == MODE_INSIDE)  dispPct = inPct;
   else if (mode == MODE_OUTSIDE) dispPct = outPct;
-  else                            dispPct = (inPct + outPct + 1) / 2;
+  else                           dispPct = (inPct + outPct + 1) / 2;
 
   char buf[8];
   snprintf(buf, sizeof(buf), "%d%%", dispPct);
@@ -498,7 +589,7 @@ static void drawMainScreen() {
   canvas.setTextColor(COL_TEXT);
   canvas.drawString(buf, CX, CY + 8);
 
-  // Detail line: show both values in ALL mode, or when they differ
+  // Detail line: show both values in ALL mode or when they differ
   if (mode == MODE_BOTH || inPct != outPct) {
     char detail[32];
     snprintf(detail, sizeof(detail), "IN %d%%   OUT %d%%", inPct, outPct);
@@ -533,6 +624,30 @@ static void drawBrightnessScreen() {
   char buf[8];
   snprintf(buf, sizeof(buf), "%d%%", brightPct);
   canvas.setFont(&fonts::FreeSansBold24pt7b);
+  canvas.setTextColor(COL_TEXT);
+  canvas.drawString(buf, CX, CY + 12);
+}
+
+static void drawPaletteScreen() {
+  const Palette& pal = PALETTES[palIdx];
+
+  drawGradientArc(OUT_R1, OUT_R2, 100, true, true, pal.outH0, pal.outH1);
+  drawGradientArc(IN_R1,  IN_R2,  100, true, true, pal.inH0,  pal.inH1);
+
+  for (int i = 0; i <= 4; i++) {
+    float angle = ARC_START + ARC_SWEEP * i / 4.0f;
+    drawTick(angle, OUT_R1 + 1, OUT_R1 + 5, COL_TICK);
+  }
+
+  canvas.setTextDatum(middle_center);
+
+  canvas.setFont(&fonts::FreeSansBold9pt7b);
+  canvas.setTextColor(COL_LABEL);
+  canvas.drawString("PALETTE", CX, CY - 25);
+
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%d/%d", palIdx + 1, PAL_COUNT);
+  canvas.setFont(&fonts::FreeSansBold18pt7b);
   canvas.setTextColor(COL_TEXT);
   canvas.drawString(buf, CX, CY + 12);
 }
