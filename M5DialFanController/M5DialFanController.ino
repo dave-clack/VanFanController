@@ -36,15 +36,14 @@
 #include <M5Dial.h>
 #include <Preferences.h>
 #include <Wire.h>
-#include "Adafruit_SHT4x.h"
 
 // =========================== Pin definitions ===============================
 
 #define PWM_INSIDE_PIN    1   // G1 — PORT.B — inside fan group
 #define PWM_OUTSIDE_PIN   2   // G2 — PORT.B — outside fan group
 #define POWER_HOLD_PIN   46   // Hold HIGH to keep M5Dial powered on
-#define PORTA_SDA_PIN    15   // G15 — PORT.A — I2C SDA
-#define PORTA_SCL_PIN    13   // G13 — PORT.A — I2C SCL
+#define PORTA_SDA_PIN    13   // G13 — PORT.A — I2C SDA
+#define PORTA_SCL_PIN    15   // G15 — PORT.A — I2C SCL
 
 // =========================== PWM configuration =============================
 
@@ -169,7 +168,7 @@ bool          wasTouching    = false;
 unsigned long lastActivityMs = 0;
 bool          dimmed         = false;
 
-Adafruit_SHT4x sht4;
+static const uint8_t SHT41_ADDR = 0x44;
 bool          sensorOk       = false;
 float         tempC          = 0;
 float         humidity       = 0;
@@ -222,11 +221,18 @@ void setup() {
   ledcAttach(PWM_INSIDE_PIN,  FAN_PWM_FREQ, FAN_PWM_RES);
   ledcAttach(PWM_OUTSIDE_PIN, FAN_PWM_FREQ, FAN_PWM_RES);
 
+  // PORT.A I2C: must init with swapped pins first to release GPIOs from
+  // M5Dial's internal I2C driver, then re-init with correct assignment.
+  Wire1.begin(PORTA_SCL_PIN, PORTA_SDA_PIN);
+  Wire1.end();
   Wire1.begin(PORTA_SDA_PIN, PORTA_SCL_PIN);
-  sensorOk = sht4.begin(&Wire1);
+  Wire1.beginTransmission(SHT41_ADDR);
+  sensorOk = (Wire1.endTransmission() == 0);
   if (sensorOk) {
-    sht4.setPrecision(SHT4X_HIGH_PRECISION);
-    sht4.setHeater(SHT4X_NO_HEATER);
+    Wire1.beginTransmission(SHT41_ADDR);
+    Wire1.write(0x94);  // soft reset
+    Wire1.endTransmission();
+    delay(1);
     Serial.println("SHT41 found on PORT.A");
   } else {
     Serial.println("SHT41 not found — running without sensor");
@@ -341,10 +347,17 @@ static void resetActivity() {
 }
 
 static void readSensor() {
-  sensors_event_t h, t;
-  if (sht4.getEvent(&h, &t)) {
-    tempC    = t.temperature;
-    humidity = h.relative_humidity;
+  Wire1.beginTransmission(SHT41_ADDR);
+  Wire1.write(0xFD);  // high-precision, no heater
+  Wire1.endTransmission();
+  delay(10);
+  if (Wire1.requestFrom(SHT41_ADDR, (uint8_t)6) == 6) {
+    uint8_t buf[6];
+    for (int i = 0; i < 6; i++) buf[i] = Wire1.read();
+    float tRaw = (uint16_t)buf[0] << 8 | buf[1];
+    float hRaw = (uint16_t)buf[3] << 8 | buf[4];
+    tempC    = -45.0f + 175.0f * tRaw / 65535.0f;
+    humidity = constrain(-6.0f + 125.0f * hRaw / 65535.0f, 0.0f, 100.0f);
     if (scr == SCR_MAIN) markDirty();
   }
 }
@@ -445,8 +458,10 @@ static void handleTouch() {
 }
 
 static void handleButton() {
-  // Long press → turn off
+  // Long press → turn off; flag prevents the subsequent release from turning back on
+  static bool holdFired = false;
   if (M5Dial.BtnA.wasHold()) {
+    holdFired = true;
     resetActivity();
     mode = MODE_OFF;
     applyFanPWM();
@@ -459,6 +474,7 @@ static void handleButton() {
   }
 
   if (!M5Dial.BtnA.wasReleased()) return;
+  if (holdFired) { holdFired = false; return; }
   resetActivity();
 
   if (scr == SCR_OFF) { turnOn(); return; }
@@ -605,6 +621,27 @@ static void drawMainScreen() {
 
   canvas.setTextDatum(middle_center);
 
+  if (sensorOk) {
+    const Palette& tp = PALETTES[palIdx];
+    float avgH = (tp.inH0 + tp.inH1 + tp.outH0 + tp.outH1) * 0.25f;
+    float compH = fmodf(avgH + 180.0f, 360.0f);
+    uint16_t tempCol = hsvTo565(compH, 0.5f, 0.8f);
+
+    char tbuf[10];
+    snprintf(tbuf, sizeof(tbuf), "%.1f", tempC);
+    canvas.setFont(&fonts::FreeSansBold9pt7b);
+    canvas.setTextSize(1.8f);
+    canvas.setTextColor(tempCol);
+    canvas.setTextDatum(middle_right);
+    int tx = CX + 5;
+    canvas.drawString(tbuf, tx, CY + 108);
+    canvas.drawCircle(tx + 3, CY + 108 - 10, 3, tempCol);
+    canvas.setTextDatum(middle_left);
+    canvas.drawString("C", tx + 8, CY + 108);
+    canvas.setTextSize(1.0f);
+    canvas.setTextDatum(middle_center);
+  }
+
   if (mode == MODE_OFF) {
     canvas.setFont(&fonts::FreeSansBold18pt7b);
     canvas.setTextColor(COL_OFF);
@@ -614,11 +651,6 @@ static void drawMainScreen() {
     canvas.setTextSize(0.7f);
     canvas.setTextColor(COL_LABEL);
     canvas.drawString("tap to start", CX, CY + 28);
-    if (sensorOk) {
-      char env[20];
-      snprintf(env, sizeof(env), "%.1f\xB0""C   %.0f%%", tempC, humidity);
-      canvas.drawString(env, CX, CY + 50);
-    }
     canvas.setTextSize(1.0f);
     return;
   }
@@ -674,15 +706,6 @@ static void drawMainScreen() {
     canvas.setTextDatum(middle_center);
   }
 
-  if (sensorOk) {
-    canvas.setFont(&fonts::FreeSansBold9pt7b);
-    canvas.setTextSize(0.6f);
-    canvas.setTextColor(COL_LABEL);
-    char env[20];
-    snprintf(env, sizeof(env), "%.1f\xB0""C   %.0f%%", tempC, humidity);
-    canvas.drawString(env, CX, CY + 57);
-    canvas.setTextSize(1.0f);
-  }
 }
 
 static void drawBrightnessScreen() {
