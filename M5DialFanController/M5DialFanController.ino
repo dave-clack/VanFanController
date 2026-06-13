@@ -68,7 +68,7 @@ static const int BRIGHT_STEP_N  = sizeof(BRIGHT_STEPS) / sizeof(BRIGHT_STEPS[0])
 
 static const unsigned long DISPLAY_MS         = 33;    // ~30 fps render cap
 static const unsigned long BRIGHT_TIMEOUT     = 5000;  // brightness/palette → main
-static const unsigned long OFF_SCREEN_TIMEOUT = 5000;  // OFF screen → dark
+static const unsigned long OFF_SCREEN_TIMEOUT = 10000; // OFF screen → dark
 static const unsigned long PREFS_DEBOUNCE     = 1000;
 static const unsigned long TOUCH_DEBOUNCE     = 300;
 static const unsigned long ENC_BOUNCE_MS      = 50;    // anti-bounce window
@@ -85,8 +85,6 @@ static const int16_t IN_R1  = 94,  IN_R2  = 78;   // inner ring radii
 static const float ARC_START = 120.0f;
 static const float ARC_SWEEP = 300.0f;
 
-// Ignore edge touches (finger brushing encoder ring)
-static const float TOUCH_MAX_R = 110.0f;
 
 // =========================== Colours =======================================
 
@@ -94,14 +92,14 @@ static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
   return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
 }
 
-static const uint16_t COL_BG        = rgb565(6,   6,   16);
-static const uint16_t COL_TRACK     = rgb565(22,  22,  38);
-static const uint16_t COL_TRACK_OFF = rgb565(12,  12,  22);
-static const uint16_t COL_TEXT      = rgb565(230, 230, 240);
-static const uint16_t COL_LABEL     = rgb565(100, 100, 120);
-static const uint16_t COL_OFF       = rgb565(60,  60,  70);
+static const uint16_t COL_BG        = rgb565(0,   0,   0);
+static const uint16_t COL_TRACK     = rgb565(20,  20,  20);
+static const uint16_t COL_TRACK_OFF = rgb565(10,  10,  10);
+static const uint16_t COL_TEXT      = rgb565(230, 230, 230);
+static const uint16_t COL_LABEL     = rgb565(110, 110, 110);
+static const uint16_t COL_OFF       = rgb565(65,  65,  65);
 static const uint16_t COL_AMBER     = rgb565(255, 193, 7);
-static const uint16_t COL_TICK      = rgb565(50,  50,  65);
+static const uint16_t COL_TICK      = rgb565(55,  55,  55);
 
 // =========================== Palettes ======================================
 
@@ -186,6 +184,7 @@ void setup() {
 
   auto cfg = M5.config();
   M5Dial.begin(cfg, true, false);
+  M5Dial.Speaker.setVolume(255);
 
   canvas.setColorDepth(16);
   canvas.createSprite(240, 240);
@@ -352,15 +351,6 @@ static void handleTouch() {
     if (now - lastTouchMs >= TOUCH_DEBOUNCE) {
       lastTouchMs = now;
 
-      // Ignore edge touches (finger brushing encoder ring)
-      auto t = M5Dial.Touch.getDetail();
-      float dx = t.x - CX;
-      float dy = t.y - CY;
-      if (sqrtf(dx * dx + dy * dy) > TOUCH_MAX_R) {
-        wasTouching = touching;
-        return;
-      }
-
       if (scr == SCR_OFF) {
         wakeFromOff();
       } else if (scr == SCR_MAIN) {
@@ -411,7 +401,7 @@ static void handleButton() {
 
   if (mode == MODE_OFF) {
     M5Dial.Speaker.tone(800, 60);
-    sleepScreen();
+    offScreenMs = millis();
   } else {
     M5Dial.Speaker.tone(1500, 40);
   }
@@ -427,9 +417,12 @@ static void enterBrightness() {
 
 static void wakeFromOff() {
   scr = SCR_MAIN;
-  M5Dial.Display.setBrightness(brightPct * 255 / 100);
   offScreenMs = millis();
-  markDirty();
+  canvas.fillSprite(COL_BG);
+  drawMainScreen();
+  canvas.pushSprite(0, 0);
+  M5Dial.Display.setBrightness(brightPct * 255 / 100);
+  dirty = false;
 }
 
 static void turnOn() {
@@ -444,7 +437,10 @@ static void turnOn() {
 
 static void sleepScreen() {
   scr = SCR_OFF;
+  canvas.fillSprite(0);
+  canvas.pushSprite(0, 0);
   M5Dial.Display.setBrightness(0);
+  dirty = false;
 }
 
 // =========================== Preferences ===================================
@@ -520,14 +516,10 @@ static void drawGradientArc(int16_t r1, int16_t r2, int pct,
       float a0 = ARC_START + i * seg;
       float a1 = ARC_START + fminf((i + 1) * seg, sweep);
       float t = (a0 - ARC_START) / ARC_SWEEP;
-      canvas.fillArc(CX, CY, r1, r2, a0, a1,
+      float a1_draw = (i < count - 1) ? a1 + 0.5f : a1;
+      canvas.fillArc(CX, CY, r1, r2, a0, a1_draw,
                      hsvTo565(h0 + (h1 - h0) * t, 1.0f, 0.7f + 0.3f * t));
     }
-  }
-
-  if (selected && active) {
-    canvas.drawArc(CX, CY, r1 + 1, r1, ARC_START,
-                   ARC_START + ARC_SWEEP, hsvTo565(midH, 0.6f, 1.0f));
   }
 }
 
@@ -583,10 +575,22 @@ static void drawMainScreen() {
   else if (mode == MODE_OUTSIDE) dispPct = outPct;
   else                           dispPct = (inPct + outPct + 1) / 2;
 
+  uint16_t pctCol;
+  if (mode == MODE_INSIDE) {
+    pctCol = hsvTo565(pal.inH1, 1.0f, 1.0f);
+  } else if (mode == MODE_OUTSIDE) {
+    pctCol = hsvTo565(pal.outH1, 1.0f, 1.0f);
+  } else {
+    float diff = pal.outH1 - pal.inH1;
+    if (diff > 180) diff -= 360;
+    if (diff < -180) diff += 360;
+    pctCol = hsvTo565(pal.inH1 + diff * 0.5f, 1.0f, 1.0f);
+  }
+
   char buf[8];
   snprintf(buf, sizeof(buf), "%d%%", dispPct);
   canvas.setFont(&fonts::FreeSansBold24pt7b);
-  canvas.setTextColor(COL_TEXT);
+  canvas.setTextColor(pctCol);
   canvas.drawString(buf, CX, CY + 8);
 
   // Detail line: show both values in ALL mode or when they differ
